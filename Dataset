@@ -1,0 +1,337 @@
+# ============================================================
+# Google Colab Code for Echocardiography RWMA Classification
+# Myocardial Infarction Detection using Deep Learning
+# ============================================================
+
+# Install Required Libraries
+!pip install pydicom opencv-python timm -q
+
+# ============================================================
+# IMPORT LIBRARIES
+# ============================================================
+
+import os
+import cv2
+import glob
+import torch
+import random
+import pydicom
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
+
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+
+import torchvision.transforms as transforms
+import torchvision.models as models
+
+# ============================================================
+# MOUNT GOOGLE DRIVE
+# ============================================================
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+# ============================================================
+# DATASET DIRECTORY STRUCTURE
+# ============================================================
+
+"""
+Dataset Structure:
+
+dataset/
+    Normal/
+        patient1.dcm
+        patient2.dcm
+
+    MI/
+        patient1.dcm
+        patient2.dcm
+"""
+
+DATASET_PATH = "/content/drive/MyDrive/ECHO_DATASET"
+
+# ============================================================
+# CREATE DATAFRAME
+# ============================================================
+
+data = []
+
+classes = ['Normal', 'MI']
+
+for label in classes:
+    folder = os.path.join(DATASET_PATH, label)
+
+    for file in glob.glob(folder + "/*.dcm"):
+
+        data.append({
+            'path': file,
+            'label': label
+        })
+
+df = pd.DataFrame(data)
+
+print(df.head())
+print("Total Samples:", len(df))
+
+# ============================================================
+# LABEL ENCODING
+# ============================================================
+
+label_map = {
+    'Normal': 0,
+    'MI': 1
+}
+
+df['target'] = df['label'].map(label_map)
+
+# ============================================================
+# TRAIN TEST SPLIT
+# 80% Training + Validation
+# 20% Internal Testing
+# ============================================================
+
+train_df, test_df = train_test_split(
+    df,
+    test_size=0.2,
+    stratify=df['target'],
+    random_state=42
+)
+
+print("Training Samples:", len(train_df))
+print("Testing Samples:", len(test_df))
+
+# ============================================================
+# IMAGE TRANSFORMATIONS
+# ============================================================
+
+transform = transforms.Compose([
+    transforms.ToPILImage(),
+    transforms.Resize((224,224)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.5],[0.5])
+])
+
+# ============================================================
+# CUSTOM DATASET CLASS
+# ============================================================
+
+class EchoDataset(Dataset):
+
+    def __init__(self, dataframe, transform=None):
+
+        self.df = dataframe
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+
+        file_path = self.df.iloc[idx]['path']
+        label = self.df.iloc[idx]['target']
+
+        # Read DICOM File
+        dicom = pydicom.dcmread(file_path)
+
+        image = dicom.pixel_array
+
+        # Normalize Image
+        image = cv2.normalize(
+            image,
+            None,
+            0,
+            255,
+            cv2.NORM_MINMAX
+        )
+
+        image = image.astype(np.uint8)
+
+        # Convert grayscale to RGB
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label
+
+# ============================================================
+# DATALOADERS
+# ============================================================
+
+train_dataset = EchoDataset(train_df, transform)
+test_dataset  = EchoDataset(test_df, transform)
+
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=16,
+    shuffle=True
+)
+
+test_loader = DataLoader(
+    test_dataset,
+    batch_size=16,
+    shuffle=False
+)
+
+# ============================================================
+# LOAD PRETRAINED RESNET50 MODEL
+# ============================================================
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+model = models.resnet50(pretrained=True)
+
+# Modify Final Layer
+model.fc = nn.Linear(model.fc.in_features, 2)
+
+model = model.to(device)
+
+# ============================================================
+# LOSS FUNCTION & OPTIMIZER
+# ============================================================
+
+criterion = nn.CrossEntropyLoss()
+
+optimizer = optim.Adam(
+    model.parameters(),
+    lr=0.0001
+)
+
+# ============================================================
+# TRAINING FUNCTION
+# ============================================================
+
+EPOCHS = 20
+
+for epoch in range(EPOCHS):
+
+    model.train()
+
+    running_loss = 0
+    correct = 0
+    total = 0
+
+    for images, labels in tqdm(train_loader):
+
+        images = images.to(device)
+        labels = labels.to(device)
+
+        optimizer.zero_grad()
+
+        outputs = model(images)
+
+        loss = criterion(outputs, labels)
+
+        loss.backward()
+
+        optimizer.step()
+
+        running_loss += loss.item()
+
+        _, predicted = torch.max(outputs, 1)
+
+        total += labels.size(0)
+
+        correct += (predicted == labels).sum().item()
+
+    train_acc = 100 * correct / total
+
+    print(f"\nEpoch {epoch+1}")
+    print(f"Loss: {running_loss:.4f}")
+    print(f"Training Accuracy: {train_acc:.2f}%")
+
+# ============================================================
+# SAVE MODEL
+# ============================================================
+
+torch.save(model.state_dict(), "rwma_resnet50_model.pth")
+
+print("Model Saved Successfully")
+
+# ============================================================
+# EVALUATION
+# ============================================================
+
+model.eval()
+
+all_preds = []
+all_labels = []
+
+with torch.no_grad():
+
+    for images, labels in test_loader:
+
+        images = images.to(device)
+
+        outputs = model(images)
+
+        _, preds = torch.max(outputs, 1)
+
+        all_preds.extend(preds.cpu().numpy())
+        all_labels.extend(labels.numpy())
+
+# ============================================================
+# CLASSIFICATION REPORT
+# ============================================================
+
+print(classification_report(
+    all_labels,
+    all_preds,
+    target_names=['Normal', 'MI']
+))
+
+# ============================================================
+# CONFUSION MATRIX
+# ============================================================
+
+cm = confusion_matrix(all_labels, all_preds)
+
+print("Confusion Matrix")
+print(cm)
+
+# ============================================================
+# GRAD-CAM VISUALIZATION (OPTIONAL)
+# ============================================================
+
+!pip install grad-cam -q
+
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.image import show_cam_on_image
+
+target_layers = [model.layer4[-1]]
+
+cam = GradCAM(
+    model=model,
+    target_layers=target_layers
+)
+
+print("Grad-CAM Ready")
+
+# ============================================================
+# EXTERNAL VALIDATION DATASET
+# ============================================================
+
+"""
+Use public datasets such as:
+
+1. EchoNet-Dynamic
+https://echonet.github.io/dynamic/
+
+2. CAMUS Dataset
+https://www.creatis.insa-lyon.fr/Challenge/camus/
+
+Place external datasets in:
+
+external_dataset/
+    Normal/
+    MI/
+
+Then repeat evaluation using the trained model.
+"""
+
+print("External Validation Setup Completed")
