@@ -1,0 +1,26 @@
+import pandas as pd
+
+data = {
+    "Method": ["Grad-CAM", "SHAP", "Saliency Map"],
+    "Trust Score (/5)": [4.8, 4.6, 4.2],
+    "Localization Score (/5)": [4.7, 4.5, 4.1]
+}
+
+df = pd.DataFrame(data)
+
+# Rank according to average score
+df["Average Score"] = (
+    (df["Trust Score (/5)"] + df["Localization Score (/5)"]) / 2
+).round(2)
+
+df["Overall Rank"] = (
+    df["Average Score"]
+      .rank(ascending=False, method="dense")
+      .astype(int)
+)
+
+df = df.sort_values("Overall Rank")
+
+print(df)
+
+df.to_csv("expert_xai.csv", index=False)
