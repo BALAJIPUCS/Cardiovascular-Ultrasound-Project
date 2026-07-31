@@ -1,0 +1,18 @@
+import pandas as pd
+
+# Ground truth and predicted values
+data = {
+    "Parameter": ["LVEF (%)", "LVEDV (mL)", "LVESV (mL)", "Stroke Volume (mL)"],
+    "Ground Truth": [58.7, 128.4, 54.8, 73.6],
+    "Predicted": [58.1, 126.9, 55.9, 71.8]
+}
+
+df = pd.DataFrame(data)
+
+# Calculate Mean Absolute Error (MAE)
+df["MAE"] = abs(df["Ground Truth"] - df["Predicted"]).round(2)
+
+print(df)
+
+# Save to CSV
+df.to_csv("functional_parameters.csv", index=False)
